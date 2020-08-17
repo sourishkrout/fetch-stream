@@ -1,0 +1,61 @@
+{
+  "editor.formatOnSave": true,
+  "eslint.enable": true,
+  "eslint.debug": true,
+  "eslint.alwaysShowStatus": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll": true
+  },
+  "eslint.codeActionsOnSave.mode": "all",
+  "eslint.validate": ["javascript", "typescript", "javascriptreact", "graphql"],
+  "prettier.disableLanguages": ["javascript", "javascriptreact"],
+  "css.validate": false,
+  "scss.validate": false,
+  "remote.restoreForwardedPorts": true,
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/*/**": true
+  },
+  "[json]": {
+    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+  },
+  "[markdown]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "stylelint.validate": ["css", "html", "postcss", "sass", "scss"],
+  "go.autocompleteUnimportedPackages": true,
+  "go.coverOnSave": true,
+  "go.inferGopath": false,
+  "go.useLanguageServer": true,
+  "[go]": {
+    "editor.snippetSuggestions": "none",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": true
+    }
+  },
+  "[go.mod]": {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": true
+    }
+  },
+  "gopls": {
+    "usePlaceholders": true,
+    "staticcheck": false,
+    "completeUnimported": true,
+    "deepCompletion": true
+  },
+  "go.lintTool": "golangci-lint",
+  "shellcheck.run": "onType",
+  "files.associations": {
+    "*.makefile": "makefile"
+  }
+}
