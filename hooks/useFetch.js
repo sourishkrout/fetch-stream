@@ -1,12 +1,38 @@
+import _filter from 'lodash/filter'
+import _get from 'lodash/get'
+import _includes from 'lodash/includes'
+import _map from 'lodash/map'
 import _merge from 'lodash/merge'
-import { useEffect, useState } from 'react'
-import { BehaviorSubject, combineLatest, interval, of } from 'rxjs'
+import _omit from 'lodash/omit'
+import _pick from 'lodash/pick'
+import _unionBy from 'lodash/unionBy'
+import _values from 'lodash/values'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  BehaviorSubject,
+  combineLatest,
+  empty,
+  from,
+  interval,
+  merge,
+  of,
+  pipe,
+  Subject,
+  zip,
+} from 'rxjs'
 import { fromFetch } from 'rxjs/fetch'
 import {
+  catchError,
+  dematerialize,
   filter,
   map,
   materialize,
+  mergeAll,
+  mergeMap,
+  onErrorResumeNext,
+  pairwise,
   pluck,
+  scan,
   shareReplay,
   switchMap,
   tap,
@@ -31,6 +57,7 @@ class FetchError extends Error {
 }
 
 const isComplete = (n) => n.kind === 'C'
+const isError = (n) => n.kind === 'E'
 
 const getURL = (url) =>
   fromFetch(url, {
@@ -41,7 +68,7 @@ const getURL = (url) =>
         throw new FetchError(resp, resp.text, `Unable to fetch: ${resp.url}`)
       }
 
-      return JSON.parse(resp.text)
+      return { url: url, body: JSON.parse(resp.text), status: resp.status }
     }),
     materialize(),
     filter((i) => !isComplete(i)),
@@ -55,9 +82,9 @@ const fetchData = (url) => {
   const loading = new BehaviorSubject(false)
 
   const data = new BehaviorSubject(url).pipe(
-    tap(() => loading.next(true)),
+    tap(() => loading.next({ url: url, status: true })),
     switchMap(getURL),
-    tap(() => loading.next(false)),
+    tap(() => loading.next({ url: url, status: false })),
     shareReplay(1),
   )
 
@@ -84,7 +111,7 @@ const useFetch = (url, refresh = false) => {
     const { loading, data, refresh: startRefresh } = fetchData(url)
     const sub = loading.subscribe(setLoading).add(
       data.subscribe((ev) => {
-        setData(ev.value)
+        setData(ev.value.body)
         setError(ev.error)
       }),
     )
@@ -99,4 +126,51 @@ const useFetch = (url, refresh = false) => {
   return { loading, error, data }
 }
 
+const updateBy = (key) =>
+  pipe(scan((result, item) => _unionBy([item], result, key), []))
+
+const useFetchMany = (urls) => {
+  const [data, setData] = useState([])
+  const [error, setError] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const key = JSON.stringify(urls)
+
+  useEffect(() => {
+    setData(_filter(data, (i) => _includes(urls, i)))
+  }, [key])
+
+  useEffect(() => {
+    const base = from(urls).pipe(
+      mergeMap((url) => from(Object.entries(fetchData(url)))),
+    )
+
+    const errors = new Subject().pipe(
+      filter(isError),
+      pluck('error'),
+      updateBy('url'),
+    )
+
+    const sub = from(base)
+      .pipe(
+        filter(([stream]) => stream === 'data'),
+        pluck(1),
+        mergeAll(),
+        tap(errors),
+        // This is dumb and AFAICT the most elegant way to silently drop
+        // errors.
+        filter((i) => !isError(i)),
+        dematerialize(),
+        updateBy('url'),
+      )
+      .subscribe(setData)
+      .add(errors.subscribe(setError))
+
+    return () => sub.unsubscribe()
+  }, [key])
+
+  return { loading, error, data }
+}
+
+export { useFetchMany }
 export default useFetch
