@@ -23,22 +23,28 @@ import {
 } from 'rxjs'
 import { fromFetch } from 'rxjs/fetch'
 import {
-  combineAll,
+  catchError,
+  delayWhen,
   dematerialize,
   filter,
+  flatMap,
   map,
+  mapTo,
   materialize,
   mergeAll,
   onErrorResumeNext,
   pairwise,
   pluck,
-  publish,
+  publishBehavior,
+  reduce,
   refCount,
   scan,
+  share,
   shareReplay,
   switchMap,
   take,
   tap,
+  withLatestFrom,
 } from 'rxjs/operators'
 
 class FetchError extends Error {
@@ -59,22 +65,20 @@ class FetchError extends Error {
   }
 }
 
-const isComplete = (n) => n.kind === 'C'
-const isError = (n) => n.kind === 'E'
+// const isComplete = (n) => n.kind === 'C'
+// const isError = (n) => n.kind === 'E'
 
 const getURL = (url) => {
   return fromFetch(url, {
     selector: async (resp) => _merge(resp, { text: await resp.text() }),
   }).pipe(
-    map((resp) => {
+    flatMap((resp) => {
       if (!resp.ok) {
         throw new FetchError(resp, resp.text, `Unable to fetch: ${resp.url}`)
       }
 
-      return { url: url, body: JSON.parse(resp.text), status: resp.status }
+      return of({ url: url, body: JSON.parse(resp.text), status: resp.status })
     }),
-    materialize(),
-    filter((i) => !isComplete(i)),
   )
 }
 
@@ -85,8 +89,12 @@ const fetchData = (url) => {
 
   const refresher = timer(0, 1000).pipe(
     switchMap(() => getURL(url)),
-    publish(),
+    catchError((err) => {
+      return of(err)
+    }),
+    publishBehavior(null),
     refCount(),
+    filter((ev) => ev !== null),
   )
 
   cache[url] = refresher
@@ -104,14 +112,7 @@ const useFetch = (url, refresh = false) => {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const fetcher = fetchData(url).pipe(
-      tap((ev) => {
-        // maybe check for no errors? shrug
-        if (ev.hasValue) {
-          setLoading(false)
-        }
-      }),
-    )
+    const fetcher = fetchData(url)
 
     let refresher = fetcher
     if (!refresh) {
@@ -119,11 +120,21 @@ const useFetch = (url, refresh = false) => {
     }
 
     const sub = refresher.subscribe((ev) => {
-      if (ev.error) {
-        return setError(ev.error)
+      if (ev.ok === false) {
+        setError(ev)
+        setData([])
+        return
       }
-      setData(ev.value.body)
+      setData(ev.body)
+      setError([])
     })
+
+    of(setLoading(true))
+      .pipe(
+        delayWhen(() => refresher),
+        mapTo(false),
+      )
+      .subscribe(setLoading)
 
     return () => sub.unsubscribe()
   }, [refresh, url])
@@ -131,13 +142,15 @@ const useFetch = (url, refresh = false) => {
   return { loading, error, data }
 }
 
+const isError = (item) => item.ok === false
+
 const updateBy = (key) =>
   pipe(scan((result, item) => _unionBy([item], result, key), []))
 
 const useFetchMany = (urls, refresh = false) => {
   const [data, setData] = useState([])
   const [error, setError] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState({})
 
   const key = JSON.stringify(urls)
 
@@ -146,28 +159,71 @@ const useFetchMany = (urls, refresh = false) => {
   }, [key])
 
   useEffect(() => {
-    // only take one for no auto-refresh
-    let base = from(urls).pipe(map((url) => fetchData(url).pipe(take(1))))
+    const all = from(urls).pipe(share())
+    let updates = {}
+
+    let base = all.pipe(map((url) => fetchData(url).pipe(take(1))))
     if (refresh) {
-      base = from(urls).pipe(map((url) => fetchData(url)))
+      base = all.pipe(map((url) => fetchData(url)))
     }
 
-    const sub = base
-      .pipe(
-        combineAll(),
-        tap((vals) => {
-          const errs = _map(
-            _filter(vals, (val) => val.kind === 'E' && val.error),
-            // eslint-disable-next-line lodash/prop-shorthand
-            (err) => err.error,
-          )
-          setError(errs)
-          setLoading(false)
-        }),
-      )
-      .subscribe(setData)
+    const status = all.pipe(
+      map((url) => {
+        return {
+          url,
+          status: true,
+        }
+      }),
+      updateBy('url'),
+    )
 
-    return () => sub.unsubscribe()
+    status.subscribe((status) => {
+      updates = status
+      setLoading(status)
+    })
+
+    const vals = base.pipe(
+      mergeAll(),
+      filter((item) => !isError(item)),
+      updateBy('url'),
+    )
+
+    const errs = base.pipe(
+      mergeAll(),
+      filter((item) => isError(item)),
+      updateBy('url'),
+    )
+
+    const stasub = merge(vals, errs)
+      .pipe(
+        delayWhen(() => status),
+        flatMap((vals) => {
+          return of(...vals)
+        }),
+        map((item) => {
+          return {
+            url: item.url,
+            status: false,
+          }
+        }),
+        flatMap((upd) => {
+          return of(...updates.concat([upd]))
+        }),
+        updateBy('url'),
+      )
+      .subscribe((update) => {
+        updates = update
+        setLoading(updates)
+      })
+
+    const valsub = vals.subscribe(setData)
+    const errsub = errs.subscribe(setError)
+
+    return () => {
+      valsub.unsubscribe()
+      errsub.unsubscribe()
+      stasub.unsubscribe()
+    }
   }, [key])
 
   return { loading, error, data }
