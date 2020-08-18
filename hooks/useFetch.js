@@ -23,13 +23,12 @@ import {
 } from 'rxjs'
 import { fromFetch } from 'rxjs/fetch'
 import {
-  catchError,
+  combineAll,
   dematerialize,
   filter,
   map,
   materialize,
   mergeAll,
-  mergeMap,
   onErrorResumeNext,
   pairwise,
   pluck,
@@ -135,7 +134,7 @@ const useFetch = (url, refresh = false) => {
 const updateBy = (key) =>
   pipe(scan((result, item) => _unionBy([item], result, key), []))
 
-const useFetchMany = (urls) => {
+const useFetchMany = (urls, refresh = false) => {
   const [data, setData] = useState([])
   const [error, setError] = useState([])
   const [loading, setLoading] = useState(true)
@@ -147,30 +146,26 @@ const useFetchMany = (urls) => {
   }, [key])
 
   useEffect(() => {
-    const base = from(urls).pipe(
-      mergeMap((url) => from(Object.entries(fetchData(url)))),
-    )
+    // only take one for no auto-refresh
+    let base = from(urls).pipe(map((url) => fetchData(url).pipe(take(1))))
+    if (refresh) {
+      base = from(urls).pipe(map((url) => fetchData(url)))
+    }
 
-    const errors = new Subject().pipe(
-      filter(isError),
-      pluck('error'),
-      updateBy('url'),
-    )
-
-    const sub = from(base)
+    const sub = base
       .pipe(
-        filter(([stream]) => stream === 'data'),
-        pluck(1),
-        mergeAll(),
-        tap(errors),
-        // This is dumb and AFAICT the most elegant way to silently drop
-        // errors.
-        filter((i) => !isError(i)),
-        dematerialize(),
-        updateBy('url'),
+        combineAll(),
+        tap((vals) => {
+          const errs = _map(
+            _filter(vals, (val) => val.kind === 'E' && val.error),
+            // eslint-disable-next-line lodash/prop-shorthand
+            (err) => err.error,
+          )
+          setError(errs)
+          setLoading(false)
+        }),
       )
       .subscribe(setData)
-      .add(errors.subscribe(setError))
 
     return () => sub.unsubscribe()
   }, [key])
