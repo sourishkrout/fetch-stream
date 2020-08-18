@@ -129,15 +129,25 @@ const useFetch = (url, refresh = false) => {
 const updateBy = (key) =>
   pipe(scan((result, item) => _unionBy([item], result, key), []))
 
-const useFetchMany = (urls) => {
+const getStream = (name) =>
+  pipe(
+    filter(([stream]) => stream === name),
+    pluck(1),
+    mergeAll(),
+  )
+
+const useFetchMany = (urls, refresh = false) => {
   const [data, setData] = useState([])
   const [error, setError] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(
+    _map(urls, (u) => ({ url: u, status: false })),
+  )
 
   const key = JSON.stringify(urls)
 
   useEffect(() => {
     setData(_filter(data, (i) => _includes(urls, i)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
   useEffect(() => {
@@ -153,9 +163,7 @@ const useFetchMany = (urls) => {
 
     const sub = from(base)
       .pipe(
-        filter(([stream]) => stream === 'data'),
-        pluck(1),
-        mergeAll(),
+        getStream('data'),
         tap(errors),
         // This is dumb and AFAICT the most elegant way to silently drop
         // errors.
@@ -165,8 +173,18 @@ const useFetchMany = (urls) => {
       )
       .subscribe(setData)
       .add(errors.subscribe(setError))
+      .add(
+        from(base)
+          .pipe(getStream('loading'), updateBy('url'))
+          .subscribe(setLoading),
+      )
+
+    if (refresh) {
+      sub.add(from(base).pipe(getStream('refresh'), mergeAll()).subscribe())
+    }
 
     return () => sub.unsubscribe()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
   return { loading, error, data }
