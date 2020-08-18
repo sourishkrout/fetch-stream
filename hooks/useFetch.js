@@ -18,6 +18,7 @@ import {
   of,
   pipe,
   Subject,
+  timer,
   zip,
 } from 'rxjs'
 import { fromFetch } from 'rxjs/fetch'
@@ -32,9 +33,12 @@ import {
   onErrorResumeNext,
   pairwise,
   pluck,
+  publish,
+  refCount,
   scan,
   shareReplay,
   switchMap,
+  take,
   tap,
 } from 'rxjs/operators'
 
@@ -59,8 +63,8 @@ class FetchError extends Error {
 const isComplete = (n) => n.kind === 'C'
 const isError = (n) => n.kind === 'E'
 
-const getURL = (url) =>
-  fromFetch(url, {
+const getURL = (url) => {
+  return fromFetch(url, {
     selector: async (resp) => _merge(resp, { text: await resp.text() }),
   }).pipe(
     map((resp) => {
@@ -73,27 +77,20 @@ const getURL = (url) =>
     materialize(),
     filter((i) => !isComplete(i)),
   )
+}
 
 const cache = {}
 
 const fetchData = (url) => {
   if (url in cache) return cache[url]
 
-  const loading = new BehaviorSubject(false)
-
-  const data = new BehaviorSubject(url).pipe(
-    tap(() => loading.next({ url: url, status: true })),
-    switchMap(getURL),
-    tap(() => loading.next({ url: url, status: false })),
-    shareReplay(1),
+  const refresher = timer(0, 1000).pipe(
+    switchMap(() => getURL(url)),
+    publish(),
+    refCount(),
   )
 
-  const refresh = combineLatest(of(url), interval(1000)).pipe(
-    pluck(0),
-    tap(data),
-  )
-
-  cache[url] = { data, loading, refresh }
+  cache[url] = refresher
 
   return cache[url]
 }
@@ -108,17 +105,26 @@ const useFetch = (url, refresh = false) => {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const { loading, data, refresh: startRefresh } = fetchData(url)
-    const sub = loading.subscribe(setLoading).add(
-      data.subscribe((ev) => {
-        setData(ev.value.body)
-        setError(ev.error)
+    const fetcher = fetchData(url).pipe(
+      tap((ev) => {
+        // maybe check for no errors? shrug
+        if (ev.hasValue) {
+          setLoading(false)
+        }
       }),
     )
 
-    if (refresh) {
-      sub.add(startRefresh.subscribe())
+    let refresher = fetcher
+    if (!refresh) {
+      refresher = fetcher.pipe(take(1))
     }
+
+    const sub = refresher.subscribe((ev) => {
+      if (ev.error) {
+        return setError(ev.error)
+      }
+      setData(ev.value.body)
+    })
 
     return () => sub.unsubscribe()
   }, [refresh, url])
