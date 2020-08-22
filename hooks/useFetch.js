@@ -1,6 +1,7 @@
 import _filter from 'lodash/filter'
 import _get from 'lodash/get'
 import _includes from 'lodash/includes'
+import _isUndefined from 'lodash/isUndefined'
 import _map from 'lodash/map'
 import _merge from 'lodash/merge'
 import _omit from 'lodash/omit'
@@ -84,11 +85,15 @@ const getURL = (url) => {
 
 const cache = {}
 
-const fetchData = (url) => {
-  if (url in cache) return cache[url]
+const fetchData = (url, refresh) => {
+  let pulse = timer(0, 1000).pipe(mapTo(url))
 
-  const refresher = timer(0, 1000).pipe(
-    switchMap(() => getURL(url)),
+  if (!refresh) pulse = pulse.pipe(take(1))
+
+  if (url in cache) return { fetcher: cache[url], pulse }
+
+  const fetcher = pulse.pipe(
+    switchMap((u) => getURL(u)),
     catchError((err) => {
       return of(err)
     }),
@@ -97,9 +102,9 @@ const fetchData = (url) => {
     filter((ev) => ev !== null),
   )
 
-  cache[url] = refresher
+  cache[url] = fetcher
 
-  return cache[url]
+  return { fetcher, pulse }
 }
 
 // TODO: should refresh be configurable?
@@ -112,14 +117,9 @@ const useFetch = (url, refresh = false) => {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const fetcher = fetchData(url)
+    const { fetcher, pulse } = fetchData(url, refresh)
 
-    let refresher = fetcher
-    if (!refresh) {
-      refresher = fetcher.pipe(take(1))
-    }
-
-    const sub = refresher.subscribe((ev) => {
+    const sub = fetcher.subscribe((ev) => {
       if (ev.ok === false) {
         setError(ev)
         setData([])
@@ -129,10 +129,12 @@ const useFetch = (url, refresh = false) => {
       setError([])
     })
 
-    of(setLoading(true))
+    merge(fetcher, pulse)
       .pipe(
-        delayWhen(() => refresher),
-        mapTo(false),
+        map((val) => {
+          if (!_isUndefined(val.status)) return false
+          return true
+        }),
       )
       .subscribe(setLoading)
 
@@ -160,14 +162,13 @@ const useFetchMany = (urls, refresh = false) => {
 
   useEffect(() => {
     const all = from(urls).pipe(share())
-    let updates = {}
+    let updates = []
 
-    let base = all.pipe(map((url) => fetchData(url).pipe(take(1))))
-    if (refresh) {
-      base = all.pipe(map((url) => fetchData(url)))
-    }
+    const base = all.pipe(map((url) => fetchData(url, refresh)))
+    const fetcher = base.pipe(map((obj) => obj.fetcher))
 
-    const status = all.pipe(
+    const status = base.pipe(
+      flatMap((obj) => obj.pulse),
       map((url) => {
         return {
           url,
@@ -182,13 +183,13 @@ const useFetchMany = (urls, refresh = false) => {
       setLoading(status)
     })
 
-    const vals = base.pipe(
+    const vals = fetcher.pipe(
       mergeAll(),
       filter((item) => !isError(item)),
       updateBy('url'),
     )
 
-    const errs = base.pipe(
+    const errs = fetcher.pipe(
       mergeAll(),
       filter((item) => isError(item)),
       updateBy('url'),
